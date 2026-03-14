@@ -1,0 +1,78 @@
+{
+  "phase": "Phase 4 - Analysis",
+  "metrics": {
+    "total_samples": 20,
+    "failure_modes": {
+      "incomplete_answer": {
+        "count": 0,
+        "rate": 0.0,
+        "failed_samples": []
+      },
+      "safety_violations": {
+        "count": 0,
+        "rate": 0.0,
+        "failed_samples": []
+      },
+      "unrealistic_tools": {
+        "count": 0,
+        "rate": 0.0,
+        "failed_samples": []
+      },
+      "overcomplicated_solution": {
+        "count": 0,
+        "rate": 0.0,
+        "failed_samples": []
+      },
+      "missing_context": {
+        "count": 0,
+        "rate": 0.0,
+        "failed_samples": []
+      },
+      "poor_quality_tips": {
+        "count": 0,
+        "rate": 0.0,
+        "failed_samples": []
+      }
+    },
+    "sample_analysis": {},
+    "overall": {
+      "samples_with_failures": 0,
+      "failure_rate": 0.0,
+      "samples_passing_all": 20
+    },
+    "most_problematic_samples": [
+      {
+        "trace_id": 1,
+        "question": "Why is my dishwasher not draining water after a cycle?...",
+        "failure_count": 0
+      },
+      {
+        "trace_id": 2,
+        "question": "My refrigerator is not cooling properly. What should I do?...",
+        "failure_count": 0
+      },
+      {
+        "trace_id": 3,
+        "question": "How do I safely replace an electrical outlet in my home?...",
+        "failure_count": 0
+      },
+      {
+        "trace_id": 4,
+        "question": "What should I do if my kitchen sink is draining slowly and s...",
+        "failure_count": 0
+      },
+      {
+        "trace_id": 5,
+        "question": "My kitchen faucet is leaking, and I want to fix it myself. W...",
+        "failure_count": 0
+      }
+    ]
+  },
+  "recommendations": [
+    {
+      "status": "excellent",
+      "message": "All failure modes below 20% threshold",
+      "action": "Prompts are generating high-quality data"
+    }
+  ]
+}

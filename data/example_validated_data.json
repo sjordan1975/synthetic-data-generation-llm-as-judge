@@ -1,0 +1,23 @@
+[
+  {
+    "question": "Why is my dishwasher not draining water after a cycle?",
+    "answer": "If your dishwasher isn't draining water after a cycle, it could be due to a clogged filter, a blocked drain hose, or a faulty drain pump. Here\u2019s a step-by-step guide to troubleshoot and fix the issue: 1. Unplug the dishwasher from the power outlet to ensure safety. 2. Remove the lower spray arm if necessary, and check the filter located at the bottom for food debris \u2013 clean it under running water. 3. Inspect the drain hose for any kinks or clogs; you may need to detach it to clear any blockages. 4. Use a multimeter to check the continuity of the drain pump; if there is no continuity, it may need to be replaced. 5. Reassemble everything and plug the dishwasher back in to see if it drains properly.",
+    "equipment_problem": "Dishwasher not draining water",
+    "tools_required": [
+      "Screwdriver",
+      "Multimeter",
+      "Adjustable Wrench",
+      "Towel"
+    ],
+    "steps": [
+      "Unplug the dishwasher from the power outlet.",
+      "Remove the lower spray arm by unscrewing it using a screwdriver, if applicable.",
+      "Check the filter located at the bottom of the dishwasher for food debris and clean it under running water.",
+      "Inspect the drain hose for any kinks or clogs; detach it if necessary and clear any blockages.",
+      "Using a multimeter, check the continuity of the drain pump; replace it if there is no continuity.",
+      "Reassemble the drain hose and lower spray arm, then plug the dishwasher back in."
+    ],
+    "safety_info": "Always unplug the dishwasher before performing any repairs to avoid electric shock. Use care when handling tools and check for sharp edges.",
+    "tips": "Regularly clean the filter and check the drain hose to prevent future clogs. If the dishwasher continues to have drainage issues, consider checking the plumbing in your home for additional blockages."
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "question": "My washing machine won't spin. What can I do to fix it?",
+    "answer": "If your washing machine is not spinning, it could be due to several reasons, such as a clogged drain hose, an unbalanced load, or a faulty lid switch. Here's how you can troubleshoot and potentially fix the issue:\n\n1. **Check for an unbalanced load**: Open the lid and redistribute the clothes evenly in the drum. Close the lid and start a spin cycle to see if it works.\n\n2. **Inspect the drain hose**: Make sure the drain hose is not clogged or kinked. Remove the hose from the back of the washer and check for blockages. Clean it if necessary.\n\n3. **Examine the lid switch**: If the lid switch is faulty, the washing machine won't spin. To test this, press the lid switch with a pen or screwdriver while the lid is open, then try to start a spin cycle. If it doesn't work, you may need to replace the lid switch.\n\n4. **Check the motor coupler**: If your washer is making a humming sound but not spinning, the motor coupler might be broken. This part connects the motor to the transmission. You will need to disassemble the washer to check it.\n\n5. **Inspect the belt**: If your washer has a belt-driven system, check if the belt is worn or broken. Replacing the belt may resolve the issue.\n\nIf these steps do not resolve the problem, it may be necessary to contact a professional for further diagnosis.",
+    "equipment_problem": "Washing machine not spinning",
+    "tools_required": [
+      "Screwdriver",
+      "Pliers",
+      "Bucket",
+      "Towel"
+    ],
+    "steps": [
+      "Unplug the washing machine from the electrical outlet.",
+      "Check the load inside the drum and redistribute clothes if necessary.",
+      "Inspect the drain hose for clogs or kinks and clear any obstructions found.",
+      "Test the lid switch by pressing it down with a tool while the lid is open.",
+      "If needed, disassemble the washer to check the motor coupler and belt for wear or damage."
+    ],
+    "safety_info": "Always unplug the appliance before performing any repairs to avoid electric shock. Wear safety gloves to protect your hands from sharp edges or components.",
+    "tips": "Keep track of all screws and small components during disassembly. Take photos of the wiring connections to ensure correct reassembly."
+  }
+]
