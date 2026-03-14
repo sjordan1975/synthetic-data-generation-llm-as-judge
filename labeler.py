@@ -46,7 +46,7 @@ from prompt_loader import load_judge_template
 
 DEFAULT_JUDGE_MODEL: str = "gpt-4o-mini"
 JUDGE_TEMPERATURE: float = 0.2  # Low temperature for deterministic evaluation
-DEFAULT_JUDGE_PROMPT_VERSION: str = "v1"
+DEFAULT_JUDGE_PROMPT_VERSION: str = "v2"
 
 
 # ---------------------------------------------------------------------------
