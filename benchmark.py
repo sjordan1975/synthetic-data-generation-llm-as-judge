@@ -83,8 +83,14 @@ def convert_benchmark_item(row: dict) -> RepairQA:
     Returns:
         A validated RepairQA instance.
     """
-    # Enum values match benchmark dataset category names directly
-    category = RepairCategory(row["category"])
+    # The benchmark dataset uses two naming conventions for the same categories.
+    # Normalize old-style names to our enum values.
+    _CATEGORY_ALIASES: dict[str, str] = {
+        "hvac_maintenance": "hvac_repair",
+        "general_home_repair": "general_maintenance",
+    }
+    raw_cat = row["category"]
+    category = RepairCategory(_CATEGORY_ALIASES.get(raw_cat, raw_cat))
 
     # Coerce tips/steps to lists if they arrive as strings
     tips = row["tips"]

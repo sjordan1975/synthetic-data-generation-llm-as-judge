@@ -93,6 +93,19 @@ class TestConvertBenchmarkItem:
             qa = convert_benchmark_item(row)
             assert qa.category.value == cat
 
+    def test_normalizes_old_style_category_names(self):
+        """Benchmark uses two naming conventions; old-style names should map correctly."""
+        from benchmark import convert_benchmark_item
+
+        aliases = {
+            "hvac_maintenance": "hvac_repair",
+            "general_home_repair": "general_maintenance",
+        }
+        for old_name, expected in aliases.items():
+            row = {**BENCHMARK_ROW, "category": old_name}
+            qa = convert_benchmark_item(row)
+            assert qa.category.value == expected
+
     def test_handles_string_tips(self):
         """Benchmark might have tips as a single string; we should coerce to list."""
         from benchmark import convert_benchmark_item
