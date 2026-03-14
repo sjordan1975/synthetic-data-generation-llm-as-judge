@@ -1,6 +1,6 @@
 # Synthetic Data Generator: Home DIY Repair Q&A
 
-A production-style pipeline for generating, validating, and quality-scoring synthetic Home DIY Repair Q&A data using LLM-as-Judge evaluation against a benchmark dataset.
+This project demonstrates a complete synthetic data generation pipeline that creates Home DIY Repair Q&A pairs, validates structure, and evaluates quality using an independent LLM-as-judge calibrated against a benchmark dataset. The pipeline is designed for iterative prompt refinement: generate → evaluate → diagnose → correct → re-evaluate. Built with Instructor, Pydantic, and GPT-4o-mini, it shows how structured output enforcement produces high-quality data on the first pass, and documents the dataset-level diversity gaps that remain.
 
 ## Overview
 
