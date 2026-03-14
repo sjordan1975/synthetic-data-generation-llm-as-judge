@@ -1,449 +1,421 @@
-"""
-Phase 3: Failure Mode Labeling for Synthetic Repair Q&A
+"""Phase 3: LLM-as-Judge Labeling for Synthetic Repair Q&A
 
-This module uses LLM-assisted labeling to evaluate the quality of synthetic
-repair Q&A pairs. It identifies 6 common failure modes to establish a baseline
-for prompt refinement in Phase 5.
+This module uses an LLM-as-Judge to evaluate the quality of synthetic repair
+Q&A pairs. It evaluates each item across two independent axes:
+
+1. **6 Failure Modes** (_instructions.md L319-326): Binary flags for common
+   defects (incomplete answer, safety violations, unrealistic tools,
+   overcomplicated solution, missing context, poor quality tips).
+
+2. **8 Quality Dimensions** (_instructions.md L165-174): Binary pass/fail
+   scores for semantic quality (answer coherence, step actionability, tool
+   realism, safety specificity, tip usefulness, problem-answer alignment,
+   appropriate scope, category accuracy).
 
 About LLM-as-Judge for Quality Assessment:
-Similar to the LLM-as-Judge exercise, we use an LLM to evaluate content quality
-based on defined criteria. The LLM acts as a consistent judge, labeling each
-sample for multiple failure modes. This is faster than manual labeling and
-provides consistent criteria across all samples.
+We use an LLM to evaluate content quality based on explicit, documented
+criteria with positive and negative examples. The LLM acts as a consistent
+judge, producing structured Pydantic output via Instructor. Temperature is
+set low (0.2) for deterministic evaluation — distinct from the higher
+temperature (0.8) used during generation.
 
-Failure Modes:
-1. incomplete_answer - Answer doesn't fully address the question
-2. safety_violations - Missing critical safety warnings
-3. unrealistic_tools - Requires specialized equipment homeowners don't have
-4. overcomplicated_solution - Too complex for DIY, should call professional
-5. missing_context - Lacks important details (materials, measurements)
-6. poor_quality_tips - Tips are generic, unhelpful, or obvious
+The judge output is a JudgeResult per item containing both failure modes
+and quality scores. An item is "failed overall" if any failure flag is set.
+An item achieves "quality pass" only if all 8 dimensions pass.
 """
+
+from __future__ import annotations
 
 import json
-import pandas as pd
-from typing import Dict, List
-from pathlib import Path
-from openai import OpenAI
-import instructor
-from pydantic import BaseModel, Field
-from dotenv import load_dotenv
 import os
+from pathlib import Path
 
-from models import RepairQA
+from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv(dotenv_path="../.env.local")
-
-# Initialize Instructor-wrapped OpenAI client
-client = instructor.from_openai(
-    OpenAI(
-        api_key=os.getenv("OPENAI_API_KEY"),
-        base_url=os.getenv("OPENAI_BASE_URL")
-    )
+from models import (
+    FailureModeResult,
+    JudgeResult,
+    QualityDimensionResult,
+    RepairQA,
 )
+from prompt_loader import load_judge_template
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+DEFAULT_JUDGE_MODEL: str = "gpt-4o-mini"
+JUDGE_TEMPERATURE: float = 0.2  # Low temperature for deterministic evaluation
+DEFAULT_JUDGE_PROMPT_VERSION: str = "v1"
 
 
-class FailureModeLabels(BaseModel):
+# ---------------------------------------------------------------------------
+# Client initialisation (deferred so tests can import without API keys)
+# ---------------------------------------------------------------------------
+
+_client = None  # Lazy singleton
+
+
+def _get_client():
+    """Return an Instructor-wrapped OpenAI client, initialising on first call."""
+    global _client
+    if _client is not None:
+        return _client
+
+    import instructor
+    from openai import OpenAI
+
+    for candidate in [Path(".env.local"), Path("../.env.local")]:
+        if candidate.exists():
+            load_dotenv(dotenv_path=str(candidate))
+            break
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    base_url = os.getenv("OPENAI_BASE_URL")
+
+    if not api_key:
+        raise ValueError(
+            "OPENAI_API_KEY not found in environment variables. "
+            "Please create a .env.local file with your API key."
+        )
+
+    _client = instructor.from_openai(
+        OpenAI(api_key=api_key, base_url=base_url)
+    )
+    return _client
+
+
+# ---------------------------------------------------------------------------
+# Judge prompt construction
+# ---------------------------------------------------------------------------
+
+def build_judge_prompt(sample: RepairQA, trace_id: str) -> str:
     """
-    Pydantic model for failure mode labels.
-    
-    Each field is a binary indicator (0=pass, 1=fail) for a specific
-    quality issue. Using Pydantic with Instructor ensures the LLM
-    returns structured, validated labels.
-    """
-    
-    incomplete_answer: int = Field(
-        ...,
-        description="1 if answer doesn't fully address the question, 0 otherwise",
-        ge=0,
-        le=1
-    )
-    
-    safety_violations: int = Field(
-        ...,
-        description="1 if missing critical safety warnings, 0 otherwise",
-        ge=0,
-        le=1
-    )
-    
-    unrealistic_tools: int = Field(
-        ...,
-        description="1 if requires specialized equipment homeowners don't have, 0 otherwise",
-        ge=0,
-        le=1
-    )
-    
-    overcomplicated_solution: int = Field(
-        ...,
-        description="1 if too complex for DIY (should call professional), 0 otherwise",
-        ge=0,
-        le=1
-    )
-    
-    missing_context: int = Field(
-        ...,
-        description="1 if lacks important details (materials, measurements, specs), 0 otherwise",
-        ge=0,
-        le=1
-    )
-    
-    poor_quality_tips: int = Field(
-        ...,
-        description="1 if tips are generic, unhelpful, or obvious, 0 otherwise",
-        ge=0,
-        le=1
-    )
+    Build the full evaluation prompt for the LLM-as-Judge.
 
-
-def create_labeling_prompt(sample: RepairQA) -> str:
-    """
-    Create a detailed prompt for LLM-assisted failure mode labeling.
-    
-    Args:
-        sample: RepairQA object to evaluate
-    
-    Returns:
-        str: Formatted prompt with evaluation criteria
-    
-    About the Prompt:
-    Like the LLM-as-Judge exercise, the prompt includes:
-    - Clear labeling rules for each failure mode
-    - Specific criteria and examples
-    - Instructions for binary output (0 or 1)
+    The prompt includes:
+    - The complete RepairQA item to evaluate
+    - Explicit criteria with positive/negative examples for all 6 failure
+      modes (_instructions.md L319-326) and all 8 quality dimensions
+      (_instructions.md L165-174)
+    - Instructions for binary scoring (0/1)
     - Context about the target audience (homeowners)
-    """
-    return f"""You are an expert evaluator for home DIY repair content quality.
 
-Evaluate the following repair Q&A pair for quality issues. This content is intended for homeowners attempting DIY repairs.
-
-REPAIR Q&A TO EVALUATE:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Question: {sample.question}
-
-Answer: {sample.answer}
-
-Equipment/Problem: {sample.equipment_problem}
-
-Tools Required: {', '.join(sample.tools_required)}
-
-Steps:
-{chr(10).join(f"{i+1}. {step}" for i, step in enumerate(sample.steps))}
-
-Safety Info: {sample.safety_info}
-
-Tips: {sample.tips}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-EVALUATION CRITERIA:
-
-Label each failure mode as 1 (FAIL) or 0 (PASS):
-
-1. incomplete_answer (1=FAIL, 0=PASS)
-   - FAIL if: Answer doesn't fully address the question, missing key steps, vague instructions
-   - PASS if: Answer comprehensively addresses the question with clear guidance
-
-2. safety_violations (1=FAIL, 0=PASS)
-   - FAIL if: Missing critical safety warnings (electrical hazards, water shutoff, protective gear)
-   - FAIL if: Dangerous advice or missing "when to call a professional" guidance
-   - PASS if: Appropriate safety warnings present for the repair type
-
-3. unrealistic_tools (1=FAIL, 0=PASS)
-   - FAIL if: Requires specialized professional tools (pipe threader, HVAC gauges, electrical testers beyond basic multimeter)
-   - PASS if: Tools are commonly available to homeowners (screwdriver, wrench, pliers, basic multimeter)
-
-4. overcomplicated_solution (1=FAIL, 0=PASS)
-   - FAIL if: Solution is too complex for typical homeowner (requires professional skills/knowledge)
-   - FAIL if: Should clearly recommend calling a professional instead
-   - PASS if: Appropriately scoped for DIY with reasonable skill level
-
-5. missing_context (1=FAIL, 0=PASS)
-   - FAIL if: Missing important details like material specifications, measurements, part numbers
-   - FAIL if: Vague about quantities, sizes, or specific components
-   - PASS if: Includes sufficient detail for homeowner to execute
-
-6. poor_quality_tips (1=FAIL, 0=PASS)
-   - FAIL if: Tips are obvious, generic, or don't add value ("be careful", "take your time")
-   - FAIL if: Tips are irrelevant or unhelpful
-   - PASS if: Tips provide genuinely useful, specific advice
-
-IMPORTANT:
-- Be consistent in your evaluation
-- Consider the target audience: homeowners with basic DIY skills
-- Focus on practical, safety-first guidance
-- A sample can fail multiple criteria or none
-
-Provide your evaluation as binary labels (0 or 1) for each failure mode.
-"""
-
-
-def label_sample(sample: RepairQA, sample_index: int) -> FailureModeLabels:
-    """
-    Use LLM to label a single sample for all failure modes.
-    
     Args:
-        sample: RepairQA object to label
-        sample_index: Index for progress tracking
-    
+        sample: The RepairQA item to evaluate.
+        trace_id: Unique identifier for this evaluation.
+
     Returns:
-        FailureModeLabels: Structured labels for all 6 failure modes
-    
-    About LLM Labeling:
-    - Uses Instructor to enforce FailureModeLabels schema
-    - Temperature set low (0.2) for consistent, deterministic labeling
-    - Returns validated Pydantic object with binary labels
+        The formatted prompt string.
     """
-    prompt = create_labeling_prompt(sample)
-    
+    tips_rendered = chr(10).join(f"  - {tip}" for tip in sample.tips)
+    steps_rendered = chr(10).join(
+        f"  {i+1}. {step}" for i, step in enumerate(sample.steps)
+    )
+
+    template = load_judge_template(version=DEFAULT_JUDGE_PROMPT_VERSION)
+
+    return template.format(
+        trace_id=trace_id,
+        category=sample.category.value,
+        question=sample.question,
+        answer=sample.answer,
+        equipment_problem=sample.equipment_problem,
+        tools_required=", ".join(sample.tools_required),
+        steps=steps_rendered,
+        safety_info=sample.safety_info,
+        tips=tips_rendered,
+    )
+
+
+def judge_sample(
+    sample: RepairQA,
+    trace_id: str,
+    model: str = DEFAULT_JUDGE_MODEL,
+) -> JudgeResult:
+    """
+    Use the LLM-as-Judge to evaluate a single RepairQA item.
+
+    Returns a JudgeResult containing both failure mode flags and quality
+    dimension scores. Uses Instructor to enforce Pydantic structure.
+
+    Args:
+        sample: The RepairQA item to evaluate.
+        trace_id: Unique identifier for this evaluation.
+        model: LLM model identifier for the judge.
+
+    Returns:
+        JudgeResult with failure_modes and quality_scores.
+
+    About LLM-as-Judge:
+    - Uses Instructor to enforce JudgeResult schema
+    - Temperature set low (0.2) for consistent, deterministic evaluation
+    - Returns validated Pydantic object with binary scores
+    """
+    prompt = build_judge_prompt(sample, trace_id)
+    client = _get_client()
+
     try:
-        # LLM evaluates and returns structured labels
-        # Temperature: Low (0.2) for consistent, deterministic evaluation
-        # Lower temperature = more consistent labeling across samples
-        labels = client.chat.completions.create(
-            model="gpt-4o-mini",
-            response_model=FailureModeLabels,
+        result = client.chat.completions.create(
+            model=model,
+            response_model=JudgeResult,
             messages=[
                 {
                     "role": "system",
-                    "content": "You are an expert evaluator for home DIY repair content. Provide consistent, objective quality assessments."
+                    "content": (
+                        "You are an expert evaluator for home DIY repair content. "
+                        "Provide consistent, objective quality assessments using "
+                        "the exact scoring criteria provided."
+                    ),
                 },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
+                {"role": "user", "content": prompt},
             ],
-            temperature=0.2,  # Low temperature for consistent labeling
-            max_tokens=500
+            temperature=JUDGE_TEMPERATURE,
+            max_tokens=500,
         )
-        
-        print(f"  ✓ Sample {sample_index}: Labeled")
-        return labels
-    
+
+        # Ensure the trace_id matches what we assigned
+        if result.trace_id != trace_id:
+            result = result.model_copy(update={"trace_id": trace_id})
+
+        return result
+
     except Exception as e:
-        print(f"  ✗ Sample {sample_index}: Labeling failed - {e}")
-        # Return all zeros (pass) as fallback
-        return FailureModeLabels(
-            incomplete_answer=0,
-            safety_violations=0,
-            unrealistic_tools=0,
-            overcomplicated_solution=0,
-            missing_context=0,
-            poor_quality_tips=0
-        )
+        print(f"  ✗ {trace_id}: Judge evaluation failed - {e}")
+        raise
 
 
-def load_validated_data(input_file: str = "data/validated_data.json") -> List[RepairQA]:
+def load_validated_data(input_file: str = "data/validated_baseline.jsonl") -> list[RepairQA]:
     """
-    Load validated data from Phase 2.
-    
+    Load validated data from Phase 2 (JSONL format).
+
     Args:
-        input_file: Path to validated data JSON file
-    
+        input_file: Path to validated data JSONL file.
+
     Returns:
-        List[RepairQA]: List of validated RepairQA objects
+        List of validated RepairQA objects.
+
+    Raises:
+        FileNotFoundError: If input file doesn't exist.
     """
     input_path = Path(input_file)
-    
+
     if not input_path.exists():
         raise FileNotFoundError(
             f"Validated data file not found: {input_file}\n"
             f"Please run validator.py first to validate the data."
         )
-    
-    with open(input_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    
-    # Convert to RepairQA objects
-    samples = [RepairQA(**item) for item in data]
-    
+
+    samples: list[RepairQA] = []
+    with open(input_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            samples.append(RepairQA(**json.loads(line)))
+
     print(f"✓ Loaded {len(samples)} validated samples from {input_file}")
     return samples
 
 
-def create_labeled_dataframe(samples: List[RepairQA], labels: List[FailureModeLabels]) -> pd.DataFrame:
+# ---------------------------------------------------------------------------
+# JSONL result saving
+# ---------------------------------------------------------------------------
+
+def save_judge_results(
+    results: list[JudgeResult],
+    output_file: str = "data/judge_results_baseline.jsonl",
+) -> None:
     """
-    Create a Pandas DataFrame with samples and failure mode labels.
-    
+    Save judge results to JSONL (_instructions.md L570).
+
+    Each line is one JudgeResult serialised to JSON.
+
     Args:
-        samples: List of RepairQA objects
-        labels: List of FailureModeLabels objects
-    
-    Returns:
-        pd.DataFrame: DataFrame with trace_id, all fields, and failure mode columns
-    
-    About the DataFrame:
-    - trace_id: Auto-assigned 1-20 for tracking
-    - All 7 RepairQA fields (question, answer, etc.)
-    - 6 binary failure mode columns (0=pass, 1=fail)
-    - Ready for Phase 4 analysis and visualization
-    """
-    # Build list of dictionaries for DataFrame
-    rows = []
-    
-    for i, (sample, label) in enumerate(zip(samples, labels), start=1):
-        row = {
-            'trace_id': i,
-            'question': sample.question,
-            'answer': sample.answer,
-            'equipment_problem': sample.equipment_problem,
-            'tools_required': ', '.join(sample.tools_required),  # Convert list to string for CSV
-            'steps': ' | '.join(sample.steps),  # Convert list to string for CSV
-            'safety_info': sample.safety_info,
-            'tips': sample.tips,
-            # Failure mode labels
-            'incomplete_answer': label.incomplete_answer,
-            'safety_violations': label.safety_violations,
-            'unrealistic_tools': label.unrealistic_tools,
-            'overcomplicated_solution': label.overcomplicated_solution,
-            'missing_context': label.missing_context,
-            'poor_quality_tips': label.poor_quality_tips
-        }
-        rows.append(row)
-    
-    df = pd.DataFrame(rows)
-    
-    print(f"\n✓ Created DataFrame with {len(df)} samples and {len(df.columns)} columns")
-    return df
-
-
-def calculate_baseline_metrics(df: pd.DataFrame) -> Dict:
-    """
-    Calculate baseline failure rate metrics.
-    
-    Args:
-        df: DataFrame with failure mode labels
-    
-    Returns:
-        Dict: Metrics including per-mode failure rates and overall rate
-    """
-    failure_modes = [
-        'incomplete_answer',
-        'safety_violations',
-        'unrealistic_tools',
-        'overcomplicated_solution',
-        'missing_context',
-        'poor_quality_tips'
-    ]
-    
-    total_samples = len(df)
-    metrics = {
-        'total_samples': total_samples,
-        'failure_modes': {}
-    }
-    
-    # Calculate per-mode failure rates
-    for mode in failure_modes:
-        failure_count = df[mode].sum()
-        failure_rate = (failure_count / total_samples) * 100
-        metrics['failure_modes'][mode] = {
-            'count': int(failure_count),
-            'rate': round(failure_rate, 1)
-        }
-    
-    # Calculate overall failure rate (any failure)
-    df['has_any_failure'] = df[failure_modes].sum(axis=1) > 0
-    overall_failures = df['has_any_failure'].sum()
-    overall_rate = (overall_failures / total_samples) * 100
-    
-    metrics['overall_failure_rate'] = round(overall_rate, 1)
-    metrics['samples_with_failures'] = int(overall_failures)
-    
-    return metrics
-
-
-def save_labeled_data(df: pd.DataFrame, output_file: str = "data/labeled_data.csv") -> None:
-    """
-    Save labeled DataFrame to CSV.
-    
-    Args:
-        df: DataFrame with labels
-        output_file: Output CSV file path
+        results: List of JudgeResult objects.
+        output_file: Output JSONL path.
     """
     output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    df.to_csv(output_path, index=False, encoding='utf-8')
-    
-    print(f"\n✓ Labeled data saved to {output_file}")
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        for result in results:
+            f.write(json.dumps(result.model_dump(mode="json"), ensure_ascii=False) + "\n")
+
+    print(f"\n✓ Judge results saved to {output_file} ({len(results)} items)")
 
 
-def print_baseline_report(metrics: Dict) -> None:
+# ---------------------------------------------------------------------------
+# Metrics calculation
+# ---------------------------------------------------------------------------
+
+FAILURE_MODE_FIELDS: list[str] = [
+    "incomplete_answer",
+    "safety_violations",
+    "unrealistic_tools",
+    "overcomplicated_solution",
+    "missing_context",
+    "poor_quality_tips",
+]
+
+QUALITY_DIM_FIELDS: list[str] = [
+    "answer_coherence",
+    "step_actionability",
+    "tool_realism",
+    "safety_specificity",
+    "tip_usefulness",
+    "problem_answer_alignment",
+    "appropriate_scope",
+    "category_accuracy",
+]
+
+
+def calculate_baseline_metrics(results: list[JudgeResult]) -> dict:
+    """
+    Aggregate judge results into baseline metrics.
+
+    Args:
+        results: List of JudgeResult objects from the judge.
+
+    Returns:
+        Dict with total_samples, per-mode failure counts/rates,
+        overall_failure_rate, per-dimension pass counts/rates,
+        and overall_quality_pass_rate.
+    """
+    total = len(results)
+    if total == 0:
+        return {"total_samples": 0}
+
+    metrics: dict = {"total_samples": total}
+
+    # --- Failure modes ---
+    fm_counts: dict[str, int] = {m: 0 for m in FAILURE_MODE_FIELDS}
+    samples_with_failure = 0
+
+    for r in results:
+        if r.failure_modes.overall_failure:
+            samples_with_failure += 1
+        for m in FAILURE_MODE_FIELDS:
+            fm_counts[m] += getattr(r.failure_modes, m)
+
+    metrics["failure_modes"] = {
+        m: {"count": c, "rate": round(c / total * 100, 1)}
+        for m, c in fm_counts.items()
+    }
+    metrics["samples_with_failures"] = samples_with_failure
+    metrics["overall_failure_rate"] = round(samples_with_failure / total * 100, 1)
+
+    # --- Quality dimensions ---
+    qd_pass_counts: dict[str, int] = {d: 0 for d in QUALITY_DIM_FIELDS}
+    quality_pass_count = 0
+
+    for r in results:
+        if r.quality_scores.quality_pass:
+            quality_pass_count += 1
+        for d in QUALITY_DIM_FIELDS:
+            qd_pass_counts[d] += getattr(r.quality_scores, d)
+
+    metrics["quality_dimensions"] = {
+        d: {"pass_count": c, "pass_rate": round(c / total * 100, 1)}
+        for d, c in qd_pass_counts.items()
+    }
+    metrics["overall_quality_pass_rate"] = round(quality_pass_count / total * 100, 1)
+
+    return metrics
+
+
+def print_baseline_report(metrics: dict) -> None:
     """
     Print baseline metrics report to console.
-    
+
     Args:
-        metrics: Metrics dictionary from calculate_baseline_metrics
+        metrics: Metrics dictionary from calculate_baseline_metrics.
     """
     print("\n" + "=" * 70)
-    print("BASELINE FAILURE RATE REPORT")
+    print("BASELINE JUDGE REPORT")
     print("=" * 70)
-    print(f"\nTotal Samples: {metrics['total_samples']}")
-    print(f"Samples with Any Failure: {metrics['samples_with_failures']} ({metrics['overall_failure_rate']}%)")
+    total = metrics["total_samples"]
+    print(f"\nTotal Samples Evaluated: {total}")
+    print(f"Samples with Any Failure: {metrics['samples_with_failures']} "
+          f"({metrics['overall_failure_rate']}%)")
+    print(f"Overall Quality Pass Rate: {metrics['overall_quality_pass_rate']}%")
+
     print("\nFailure Mode Breakdown:")
     print("-" * 70)
-    
-    for mode, data in metrics['failure_modes'].items():
-        print(f"  {mode:30s}: {data['count']:2d} samples ({data['rate']:5.1f}%)")
-    
+    for mode, data in metrics["failure_modes"].items():
+        print(f"  {mode:30s}: {data['count']:3d} failures ({data['rate']:5.1f}%)")
+
+    print("\nQuality Dimension Pass Rates:")
+    print("-" * 70)
+    for dim, data in metrics["quality_dimensions"].items():
+        print(f"  {dim:30s}: {data['pass_count']:3d}/{total} ({data['pass_rate']:5.1f}%)")
+
     print("=" * 70)
 
 
 def main():
     """
-    Main execution function for Phase 3: Failure Mode Labeling
-    
+    Main execution function for Phase 3: LLM-as-Judge Labeling.
+
     Steps:
-    1. Load validated data from Phase 2
-    2. Use LLM to label each sample for 6 failure modes
-    3. Create Pandas DataFrame with labels
-    4. Calculate baseline metrics
-    5. Save labeled data to CSV
+    1. Load validated data from Phase 2 (JSONL)
+    2. Evaluate each sample with the LLM judge (6 failure modes + 8 quality dims)
+    3. Calculate baseline metrics
+    4. Save judge results as JSONL
+    5. Print baseline report
     """
     print("=" * 70)
-    print("PHASE 3: FAILURE MODE LABELING")
-    print("LLM-Assisted Quality Assessment")
+    print("PHASE 3: LLM-AS-JUDGE LABELING")
+    print("6 Failure Modes + 8 Quality Dimensions")
     print("=" * 70)
     print()
-    
+
     try:
         # Load validated data
-        samples = load_validated_data("data/validated_data.json")
-        
-        # Label each sample using LLM
-        print(f"\nLabeling {len(samples)} samples for 6 failure modes...")
-        labels = []
-        
+        samples = load_validated_data("data/validated_baseline.jsonl")
+
+        # Evaluate each sample
+        print(f"\nEvaluating {len(samples)} samples...")
+        results: list[JudgeResult] = []
+
         for i, sample in enumerate(samples, start=1):
-            label = label_sample(sample, i)
-            labels.append(label)
-        
-        # Create DataFrame
-        df = create_labeled_dataframe(samples, labels)
-        
-        # Calculate baseline metrics
-        metrics = calculate_baseline_metrics(df)
-        
-        # Save labeled data
-        save_labeled_data(df, "data/labeled_data.csv")
-        
+            trace_id = f"qa_{i:03d}"
+            print(f"  {trace_id}: Evaluating...")
+            result = judge_sample(sample, trace_id)
+            results.append(result)
+            fm_flag = "✗" if result.failure_modes.overall_failure else "✓"
+            qd_flag = "✓" if result.quality_scores.quality_pass else "✗"
+            print(f"  {trace_id}: failures={fm_flag}  quality={qd_flag}")
+
+        # Calculate metrics
+        metrics = calculate_baseline_metrics(results)
+
+        # Save results
+        save_judge_results(results, "data/judge_results_baseline.jsonl")
+
+        # Save metrics as JSON summary
+        metrics_path = Path("outputs/baseline_metrics.json")
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(metrics_path, "w") as f:
+            json.dump(metrics, f, indent=2)
+        print(f"\n✓ Metrics saved to {metrics_path}")
+
         # Print report
         print_baseline_report(metrics)
-        
+
         print("\n" + "=" * 70)
         print("PHASE 3 COMPLETE")
         print("=" * 70)
         print("\nNext Steps:")
-        print("1. Review labeled_data.csv")
+        print("1. Review data/judge_results_baseline.jsonl")
         print("2. Proceed to Phase 4: Analysis & Heatmap")
         print("   Run: python analyzer.py")
-    
+
     except FileNotFoundError as e:
         print(f"\n✗ Error: {e}")
         print("\nPlease run Phase 2 first:")
         print("  python validator.py")
-    
+
     except Exception as e:
         print(f"\n✗ Unexpected error: {e}")
         raise

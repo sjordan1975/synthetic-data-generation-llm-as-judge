@@ -12,77 +12,272 @@ Pydantic models enforce that LLM-generated responses contain all required fields
 with correct types, guaranteeing consistent, valid synthetic data.
 """
 
-from pydantic import BaseModel, Field
-from typing import List
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class RepairCategory(str, Enum):
+    """The 5 required repair domains (_instructions.md L299-309)."""
+
+    appliance_repair = "appliance_repair"
+    plumbing_repair = "plumbing_repair"
+    electrical_repair = "electrical_repair"
+    hvac_repair = "hvac_repair"
+    general_maintenance = "general_maintenance"
 
 
 class RepairQA(BaseModel):
     """
     Schema for a home DIY repair Q&A pair.
-    
+
     This model enforces the structure of synthetic repair data, ensuring
     all required fields are present with correct types.
+
+    Field constraints derived from _instructions.md L238-281:
+    - 7 required content fields (question, answer, equipment_problem,
+      tools_required, steps, safety_info, tips)
+    - category field tracks which repair domain generated this item (L299-309)
+    - steps ≥3 items (L275), tools_required ≥1 (L277), tips ≥1 (L279)
+    - question and answer must be non-empty (L273)
+    - safety_info must be present and non-empty (L281)
     """
-    
+
     question: str = Field(
         ...,
         description="The repair question from a homeowner",
-        min_length=10
+        min_length=10,
     )
-    
+
     answer: str = Field(
         ...,
         description="Detailed answer with practical repair guidance",
-        min_length=50
+        min_length=50,
     )
-    
+
     equipment_problem: str = Field(
         ...,
         description="Specific equipment or problem being addressed",
-        min_length=5
+        min_length=5,
     )
-    
-    tools_required: List[str] = Field(
+
+    tools_required: list[str] = Field(
         ...,
         description="List of tools needed for the repair",
-        min_items=1
+        min_length=1,
     )
-    
-    steps: List[str] = Field(
+
+    steps: list[str] = Field(
         ...,
-        description="Step-by-step repair instructions",
-        min_items=2
+        description="Step-by-step repair instructions (≥3 required)",
+        min_length=3,
     )
-    
+
     safety_info: str = Field(
         ...,
         description="Important safety warnings and precautions",
-        min_length=20
+        min_length=20,
     )
-    
-    tips: str = Field(
+
+    tips: list[str] = Field(
         ...,
-        description="Helpful tips and best practices",
-        min_length=20
+        description="Practical tips to make the repair easier or more reliable (≥1 required)",
+        min_length=1,
     )
-    
-    class Config:
-        """Pydantic configuration"""
-        json_schema_extra = {
+
+    category: RepairCategory = Field(
+        ...,
+        description="Which of the 5 repair domains this item belongs to",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "question": "How do I fix a leaking faucet?",
-                "answer": "To fix a leaking faucet, first turn off the water supply under the sink. Remove the faucet handle by unscrewing the set screw, then remove the packing nut to access the stem. Replace the worn washer or O-ring with a new one of the same size. Reassemble the faucet and turn the water back on to test.",
+                "answer": (
+                    "To fix a leaking faucet, first turn off the water supply "
+                    "under the sink. Remove the faucet handle by unscrewing the "
+                    "set screw, then remove the packing nut to access the stem. "
+                    "Replace the worn washer or O-ring with a new one of the "
+                    "same size. Reassemble the faucet and turn the water back "
+                    "on to test."
+                ),
                 "equipment_problem": "Leaking kitchen faucet - worn washer",
-                "tools_required": ["adjustable wrench", "screwdriver", "replacement washer"],
+                "tools_required": [
+                    "adjustable wrench",
+                    "screwdriver",
+                    "replacement washer",
+                ],
                 "steps": [
                     "Turn off water supply under sink",
-                    "Remove faucet handle",
-                    "Remove packing nut",
-                    "Replace worn washer",
-                    "Reassemble faucet",
-                    "Test for leaks"
+                    "Remove faucet handle by unscrewing set screw",
+                    "Replace worn washer or O-ring",
+                    "Reassemble faucet and test for leaks",
                 ],
-                "safety_info": "Always turn off the water supply before starting any plumbing repair. Keep a bucket handy to catch any residual water.",
-                "tips": "Take a photo before disassembly to remember how parts fit together. Bring the old washer to the hardware store to ensure you get the correct replacement size."
+                "safety_info": (
+                    "Always turn off the water supply before starting any "
+                    "plumbing repair. Keep a bucket handy to catch residual water."
+                ),
+                "tips": [
+                    "Take a photo before disassembly to remember how parts fit.",
+                    "Bring the old washer to the store to match the size.",
+                ],
+                "category": "plumbing_repair",
             }
         }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task #3: Generation metadata (_instructions.md L283-291)
+# ---------------------------------------------------------------------------
+
+class GenerationMeta(BaseModel):
+    """
+    Per-item generation provenance tracked alongside the RepairQA content.
+
+    This metadata is not part of the final dataset but is used for
+    traceability, debugging, and analysis of which prompts/models
+    produce which quality outcomes.
+    """
+
+    prompt_template: str = Field(
+        ...,
+        description="Which prompt template was used to generate this item",
+    )
+    model: str = Field(
+        ...,
+        description="LLM model identifier (e.g. 'gpt-4o-mini')",
+    )
+    timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="When this item was generated (UTC)",
+    )
+    validation_passed: Optional[bool] = Field(
+        default=None,
+        description="Whether the item passed structural validation (set after Phase 2)",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task #4: Judge output models (_instructions.md L315-358)
+# ---------------------------------------------------------------------------
+
+class FailureModeResult(BaseModel):
+    """
+    Binary pass/fail scores for the 6 failure modes.
+
+    Each field is 0 (pass) or 1 (fail). The derived `overall_failure`
+    flag is True if *any* mode is flagged.
+
+    Failure modes from _instructions.md L319-326.
+    """
+
+    incomplete_answer: Literal[0, 1] = Field(
+        ..., description="Answer lacks enough detail to complete the repair"
+    )
+    safety_violations: Literal[0, 1] = Field(
+        ..., description="Missing or incorrect safety warnings"
+    )
+    unrealistic_tools: Literal[0, 1] = Field(
+        ..., description="Requires professional or specialty tools"
+    )
+    overcomplicated_solution: Literal[0, 1] = Field(
+        ..., description="Recommends professional service for a DIY task"
+    )
+    missing_context: Literal[0, 1] = Field(
+        ..., description="Lacks context to understand the problem"
+    )
+    poor_quality_tips: Literal[0, 1] = Field(
+        ..., description="Tips are vague, generic, or unhelpful"
+    )
+
+    @property
+    def overall_failure(self) -> bool:
+        """True if any failure mode is flagged (L328)."""
+        return any(
+            getattr(self, f) == 1
+            for f in [
+                "incomplete_answer",
+                "safety_violations",
+                "unrealistic_tools",
+                "overcomplicated_solution",
+                "missing_context",
+                "poor_quality_tips",
+            ]
+        )
+
+
+class QualityDimensionResult(BaseModel):
+    """
+    Binary pass/fail scores for the 8 quality dimensions.
+
+    Each field is 1 (pass) or 0 (fail). The derived `quality_pass`
+    flag is True only if *all* dimensions pass.
+
+    Quality dimensions from _instructions.md L165-174.
+    """
+
+    answer_coherence: Literal[0, 1] = Field(
+        ..., description="Q1: Answer reads as unified narrative"
+    )
+    step_actionability: Literal[0, 1] = Field(
+        ..., description="Q2: Steps specific enough for unfamiliar person"
+    )
+    tool_realism: Literal[0, 1] = Field(
+        ..., description="Q3: Tools available at general hardware store <$50"
+    )
+    safety_specificity: Literal[0, 1] = Field(
+        ..., description="Q4: Names specific hazard + specific precaution"
+    )
+    tip_usefulness: Literal[0, 1] = Field(
+        ..., description="Q5: Tips non-obvious and task-specific"
+    )
+    problem_answer_alignment: Literal[0, 1] = Field(
+        ..., description="Q6: Answer directly addresses stated problem"
+    )
+    appropriate_scope: Literal[0, 1] = Field(
+        ..., description="Q7: Repair within realistic DIY capability"
+    )
+    category_accuracy: Literal[0, 1] = Field(
+        ..., description="Q8: Category correctly matches repair domain"
+    )
+
+    @property
+    def quality_pass(self) -> bool:
+        """True only if all 8 quality dimensions pass (L352)."""
+        return all(
+            getattr(self, f) == 1
+            for f in [
+                "answer_coherence",
+                "step_actionability",
+                "tool_realism",
+                "safety_specificity",
+                "tip_usefulness",
+                "problem_answer_alignment",
+                "appropriate_scope",
+                "category_accuracy",
+            ]
+        )
+
+
+class JudgeResult(BaseModel):
+    """
+    Combined judge output per evaluated item (_instructions.md L330-358).
+
+    Combines failure mode flags and quality dimension scores into one
+    result object. An item can pass all failure modes but still fail
+    quality dimensions — the two evaluations are independent.
+    """
+
+    trace_id: str = Field(
+        ...,
+        description="Unique identifier linking this result to a RepairQA item",
+        min_length=1,
+    )
+    failure_modes: FailureModeResult
+    quality_scores: QualityDimensionResult

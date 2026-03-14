@@ -11,51 +11,64 @@ data types, and meet minimum quality requirements (field lengths, list sizes).
 This catches any issues early before investing time in manual labeling.
 
 Process:
-1. Load synthetic_data.json from Phase 1
+1. Load baseline.jsonl from Phase 1 (JSONL format, one record per line)
 2. Validate each sample against RepairQA model
 3. Separate valid and invalid samples
 4. Generate validation report with statistics
-5. Save validated samples for Phase 3
+5. Save validated samples as JSONL for Phase 3
 """
 
+from __future__ import annotations
+
 import json
-from typing import List, Dict, Tuple
 from pathlib import Path
+
 from pydantic import ValidationError
 
 from models import RepairQA
 
 
-def load_synthetic_data(input_file: str = "data/synthetic_data.json") -> List[Dict]:
+def load_synthetic_data(input_file: str = "data/baseline.jsonl") -> list[dict]:
     """
-    Load synthetic data from JSON file.
-    
+    Load synthetic data from a JSONL file (one JSON object per line).
+
+    The optional "metadata" key is stripped before returning so that
+    downstream validation sees only RepairQA fields.
+
     Args:
-        input_file: Path to synthetic data JSON file
-    
+        input_file: Path to synthetic data JSONL file.
+
     Returns:
-        List[Dict]: Raw data as list of dictionaries
-    
+        List of dictionaries (RepairQA fields only, metadata removed).
+
     Raises:
-        FileNotFoundError: If input file doesn't exist
-        json.JSONDecodeError: If file is not valid JSON
+        FileNotFoundError: If input file doesn't exist.
+        json.JSONDecodeError: If any line is not valid JSON.
     """
     input_path = Path(input_file)
-    
+
     if not input_path.exists():
         raise FileNotFoundError(
             f"Synthetic data file not found: {input_file}\n"
             f"Please run data_generator.py first to generate the data."
         )
-    
-    with open(input_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    
+
+    data: list[dict] = []
+    with open(input_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            record = json.loads(line)
+            # Strip generation metadata — not part of the RepairQA schema
+            record.pop("metadata", None)
+            data.append(record)
+
     print(f"✓ Loaded {len(data)} samples from {input_file}")
     return data
 
 
-def validate_samples(raw_data: List[Dict]) -> Tuple[List[RepairQA], List[Dict]]:
+def validate_samples(raw_data: list[dict]) -> tuple[list[RepairQA], list[dict]]:
     """
     Validate raw data against RepairQA Pydantic model.
     
@@ -109,36 +122,40 @@ def validate_samples(raw_data: List[Dict]) -> Tuple[List[RepairQA], List[Dict]]:
     return valid_samples, validation_errors
 
 
-def save_validated_data(valid_samples: List[RepairQA], output_file: str = "data/validated_data.json") -> None:
+def save_validated_data(
+    valid_samples: list[RepairQA],
+    output_file: str = "data/validated_baseline.jsonl",
+) -> None:
     """
-    Save validated samples to JSON file.
-    
+    Save validated samples to a JSONL file.
+
     Args:
-        valid_samples: List of validated RepairQA objects
-        output_file: Output file path
-    
+        valid_samples: List of validated RepairQA objects.
+        output_file: Output file path (JSONL).
+
     About Saving:
     Only structurally valid samples are saved. This ensures Phase 3
     (failure labeling) works with clean, well-formed data.
+
+    About JSONL:
+    JSON Lines format stores one JSON object per line. This is consistent
+    with the generation output format and is streaming-friendly.
     """
-    # Convert Pydantic models to dictionaries
-    data_dicts = [sample.model_dump() for sample in valid_samples]
-    
-    # Create output directory if needed
     output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(data_dicts, f, indent=2, ensure_ascii=False)
-    
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        for sample in valid_samples:
+            f.write(json.dumps(sample.model_dump(mode="json"), ensure_ascii=False) + "\n")
+
     print(f"\n✓ Saved {len(valid_samples)} validated samples to {output_file}")
 
 
 def generate_validation_report(
     total_samples: int,
-    valid_samples: List[RepairQA],
-    validation_errors: List[Dict],
-    output_file: str = "outputs/validation_report.txt"
+    valid_samples: list[RepairQA],
+    validation_errors: list[dict],
+    output_file: str = "outputs/validation_report.txt",
 ) -> None:
     """
     Generate a detailed validation report.
@@ -255,15 +272,15 @@ def main():
     print()
     
     try:
-        # Load synthetic data
-        raw_data = load_synthetic_data("data/synthetic_data.json")
-        
+        # Load synthetic data (JSONL)
+        raw_data = load_synthetic_data("data/baseline.jsonl")
+
         # Validate samples
         valid_samples, validation_errors = validate_samples(raw_data)
-        
-        # Save validated data
+
+        # Save validated data (JSONL)
         if valid_samples:
-            save_validated_data(valid_samples, "data/validated_data.json")
+            save_validated_data(valid_samples, "data/validated_baseline.jsonl")
         
         # Generate report
         generate_validation_report(

@@ -9,6 +9,9 @@ numpy>=2.0.0                # Numerical computing (installed with pandas)
 seaborn>=0.13.0             # Statistical data visualization
 matplotlib>=3.10.0          # Plotting library (installed with seaborn)
 
+# Data / Benchmarking
+datasets>=4.0.0             # HuggingFace datasets for benchmark loading
+
 # Utilities
 python-dotenv>=1.2.0        # Environment variable management
 
